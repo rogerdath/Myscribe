@@ -1,7 +1,6 @@
 import { TranscriptResult, TranscriptError } from './types'
-import { downloadAudio } from './ytdlp'
-import { transcribeAudio } from './whisper'
-import { unlink } from 'fs/promises'
+import { streamYouTubeAudio } from './ytdlcore'
+import { transcribeAudioStream } from './whisper'
 
 function extractVideoId(url: string): string | null {
   try {
@@ -32,7 +31,7 @@ export async function transcribeYouTube(url: string): Promise<TranscriptResult> 
     throw new TranscriptError('UNSUPPORTED_URL', 'Could not extract a video ID from this YouTube URL.')
   }
 
-  // Try captions first (no API key required)
+  // Try captions first — no API key needed, fast
   try {
     const { YoutubeTranscript } = await import('youtube-transcript')
     const items = await YoutubeTranscript.fetchTranscript(videoId)
@@ -50,44 +49,36 @@ export async function transcribeYouTube(url: string): Promise<TranscriptResult> 
         .replace(/\s+/g, ' ')
         .trim()
 
-      const durationSeconds = segments.length > 0 ? segments[segments.length - 1].end : 0
-
       return {
         platform: 'youtube',
         title: '',
-        durationSeconds,
+        durationSeconds: segments.length > 0 ? segments[segments.length - 1].end : 0,
         transcript,
         segments,
         source: 'captions',
       }
     }
   } catch {
-    // Captions unavailable — fall through to audio transcription
+    // No captions available — fall through to audio transcription
   }
 
-  // Fall back to audio transcription via Whisper
+  // Audio transcription via @distube/ytdl-core (pure Node.js, no binary needed)
   if (!process.env.OPENAI_API_KEY) {
     throw new TranscriptError(
       'EXTRACTION_FAILED',
-      'No captions are available for this video and audio transcription is not configured.'
+      'No captions available for this video and audio transcription is not configured.'
     )
   }
 
-  let audioPath: string | null = null
-  try {
-    audioPath = await downloadAudio(url)
-    const result = await transcribeAudio(audioPath)
-    return {
-      platform: 'youtube',
-      title: '',
-      durationSeconds: result.segments.length > 0 ? result.segments[result.segments.length - 1].end : 0,
-      transcript: result.text,
-      segments: result.segments,
-      source: 'audio_transcription',
-    }
-  } finally {
-    if (audioPath) {
-      unlink(audioPath).catch(() => undefined)
-    }
+  const audioStream = await streamYouTubeAudio(url)
+  const result = await transcribeAudioStream(audioStream, 'audio.webm')
+
+  return {
+    platform: 'youtube',
+    title: '',
+    durationSeconds: result.segments.length > 0 ? result.segments[result.segments.length - 1].end : 0,
+    transcript: result.text,
+    segments: result.segments,
+    source: 'audio_transcription',
   }
 }
